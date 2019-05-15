@@ -15,17 +15,15 @@ def handle_conflict(key, action_1, client_1, action_2, client_2):
     print(
         "\n"
         'Conflict for "{}". Which version would you like to keep?\n'
-        "   (1) {}{} updated at {} ({})\n"
-        "   (2) {}{} updated at {} ({})\n"
+        "   (1) {} updated at {} ({})\n"
+        "   (2) {} updated at {} ({})\n"
         "   (d) View difference (requires the diff command)\n"
         "   (X) Skip this file\n".format(
             key,
-            client_1.get_uri(),
-            key,
+            client_1.get_uri_local(key),
             action_1.get_remote_datetime(),
             action_1.state,
-            client_2.get_uri(),
-            key,
+            client_2.get_uri_local(key),
             action_2.get_remote_datetime(),
             action_2.state,
         ),
@@ -47,8 +45,12 @@ def handle_conflict(key, action_1, client_1, action_2, client_2):
 
 
 def display_progress_bar(sync_object):
+    if hasattr(sync_object, 'total_size'):
+        total_size = sync_object.total_size 
+    else:
+        total_size = 0
     ProgressBar(
-        total=sync_object.total_size,
+        total=total_size,
         leave=False,
         ncols=80,
         unit="B",
@@ -120,21 +122,21 @@ class SyncCommand(Command):
             self.logger.info(
                 self._colored("YELLOW", "Updating %s (%s => %s)"),
                 resolution.key,
-                resolution.from_client.get_uri(),
-                resolution.to_client.get_uri(),
+                resolution.from_client.get_uri_local(),
+                resolution.to_client.get_uri_local(),
             )
         elif resolution.action == Resolution.CREATE:
             self.logger.info(
                 self._colored("GREEN", "Creating %s (%s => %s)"),
                 resolution.key,
-                resolution.from_client.get_uri(),
-                resolution.to_client.get_uri(),
+                resolution.from_client.get_uri_local(),
+                resolution.to_client.get_uri_local(),
             )
         elif resolution.action == Resolution.DELETE:
             self.logger.info(
                 self._colored("RED", "Deleting %s on %s"),
                 resolution.key,
-                resolution.to_client.get_uri(),
+                resolution.to_client.get_uri_local(),
             )
 
     def _colored(self, color, text):

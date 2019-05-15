@@ -3,25 +3,11 @@ from collections import defaultdict
 
 from s4.commands import Command
 
-# Dont crash on import if the underlying operating system does not support INotify
-try:
-    from inotify_simple import flags
-    from s4.inotify_recursive import INotifyRecursive
-
-    supported = True
-except (OSError, ModuleNotFoundError):
-    supported = False
-
+from watchdir import WatchDir
+import os
 
 class DaemonCommand(Command):
     def run(self, terminator=lambda x: False):
-        if not supported:
-            self.logger.info("Cannot run INotify on your operating system")
-            self.logger.info(
-                "Only Linux machines are officially supported for this command"
-            )
-            return
-
         all_targets = list(self.config["targets"].keys())
         if not self.args.targets:
             targets = all_targets
@@ -38,8 +24,7 @@ class DaemonCommand(Command):
                 self.logger.info("Unknown target: %s", target)
                 return
 
-        notifier = INotifyRecursive()
-        watch_flags = flags.CREATE | flags.DELETE | flags.MODIFY
+        notifier = WatchDir()
 
         watch_map = {}
 
@@ -47,8 +32,7 @@ class DaemonCommand(Command):
             entry = self.config["targets"][target]
             path = entry["local_folder"]
             self.logger.info("Watching %s", path)
-            for wd in notifier.add_watches(path.encode("utf8"), watch_flags):
-                watch_map[wd] = target
+            notifier.add_watch(path, True, target)
 
             # Check for any pending changes
             worker = self.get_sync_worker(target)
@@ -58,15 +42,17 @@ class DaemonCommand(Command):
         while not terminator(index):
             index += 1
 
-            to_run = defaultdict(set)
-            for event in notifier.read(read_delay=self.args.read_delay):
-                target = watch_map[event.wd]
-
+            to_run = set()
+            
+            event = notifier.read(read_delay=self.args.read_delay)
+            while event is not None:
                 # Dont bother running for .index
-                if event.name not in (".index", ".s4lock"):
-                    to_run[target].add(event.name)
+                if os.path.basename(event.fullname) not in (".index", ".s4lock"):
+                    to_run.add(target)
 
-            for target, keys in to_run.items():
+                event = notifier.readAll(read_delay=self.args.read_delay)
+
+            for target in to_run:
                 worker = self.get_sync_worker(target)
 
                 # Should ideally be setting keys to sync

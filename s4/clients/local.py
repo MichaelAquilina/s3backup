@@ -12,35 +12,64 @@ import filelock
 import magic
 import pathspec
 
+import posixpath
+import pathlib
+
 from s4.clients import SyncClient, SyncObject
 
 logger = logging.getLogger(__name__)
 
 
+def posix2local(path):
+    parts = list(pathlib.PurePosixPath(path).parts)
+    if len(parts) > 0:
+        if parts[0] == "\\":
+            parts[0] = "/"
+        res = pathlib.Path(parts[0])
+        for part in parts[1:]:
+            res = res / part
+        return str(res)
+    else:
+        return "."
+
+def local2posix(path):
+    parts = list(pathlib.Path(path).parts)
+    if len(parts) > 0:
+        if parts[0] == "\\":
+            parts[0] = "/"
+        res = pathlib.PurePosixPath(parts[0])
+        for part in parts[1:]:
+            res = res / part
+        return str(res)
+    else:
+        return "."
+
 def get_local_client(target):
     return LocalSyncClient(target)
 
-
-def traverse(path, ignore_files=None):
+def traverse(posixpath, ignore_files=None):
+    return _traverse(posix2local(posixpath), ignore_files)
+    
+def _traverse(path, ignore_files=None, relative_path = ""):
     if not os.path.exists(path):
         return
     if ignore_files is None:
         ignore_files = []
 
-    for item in scandir(path):
+    for item in scandir(os.path.join(path, relative_path)):
         full_path = os.path.join(path, item.name)
         spec = pathspec.PathSpec.from_lines(
             pathspec.patterns.GitWildMatchPattern, ignore_files
         )
+
         if spec.match_file(full_path):
             logger.debug("Ignoring %s", item)
             continue
 
         if item.is_dir():
-            for result in traverse(item.path, ignore_files):
-                yield os.path.join(item.name, result)
+            yield from _traverse(path, ignore_files, os.path.join(relative_path, item.name))
         else:
-            yield item.name
+            yield local2posix(os.path.join(relative_path, item.name))
 
 
 class LocalSyncClient(SyncClient):
@@ -48,7 +77,7 @@ class LocalSyncClient(SyncClient):
     LOCK_FILE_NAME = ".s4lock"
 
     def __init__(self, path):
-        self.path = path
+        self.path = local2posix(path)
         self.reload_index()
         self.reload_ignore_files()
         self._lock = filelock.FileLock(self.lock_file)
@@ -58,6 +87,7 @@ class LocalSyncClient(SyncClient):
         return self.get_uri(self.LOCK_FILE_NAME)
 
     def ensure_path(self, path):
+        path = posix2local(path)
         parent = os.path.dirname(path)
         if not os.path.exists(parent):
             os.makedirs(parent)
@@ -92,13 +122,16 @@ class LocalSyncClient(SyncClient):
         return "LocalSyncClient<{}>".format(self.path)
 
     def get_uri(self, key=""):
-        return os.path.join(self.path, key)
+        return posixpath.join(self.path, key)
+
+    def get_uri_local(self, key=""):
+        return posix2local(self.get_uri(key))
 
     def index_path(self):
-        return os.path.join(self.path, ".index")
+        return posixpath.join(self.path, ".index")
 
     def put(self, key, sync_object, callback=None):
-        path = os.path.join(self.path, key)
+        path = posix2local(posixpath.join(self.path, key))
         self.ensure_path(path)
 
         BUFFER_SIZE = 4096
@@ -113,17 +146,18 @@ class LocalSyncClient(SyncClient):
                         callback(len(data))
                     if len(data) < BUFFER_SIZE:
                         break
-            shutil.move(temp_path, path)
         except Exception:
+            os.close(fd)
             os.remove(temp_path)
             raise
-        finally:
+        else:
             os.close(fd)
+            shutil.move(temp_path, path)
 
         self.set_remote_timestamp(key, sync_object.timestamp)
 
     def get(self, key):
-        path = os.path.join(self.path, key)
+        path = posix2local(posixpath.join(self.path, key))
         if os.path.exists(path):
             fp = open(path, "rb")
             stat = os.stat(path)
@@ -132,7 +166,7 @@ class LocalSyncClient(SyncClient):
             return None
 
     def delete(self, key):
-        path = os.path.join(self.path, key)
+        path = posix2local(posixpath.join(self.path, key))
         if os.path.exists(path):
             os.remove(path)
             return True
@@ -143,7 +177,7 @@ class LocalSyncClient(SyncClient):
         self.index = self._load_index()
 
     def _load_index(self):
-        index_path = self.index_path()
+        index_path = posix2local(self.index_path())
         if not os.path.exists(index_path):
             return {}
 
@@ -175,13 +209,13 @@ class LocalSyncClient(SyncClient):
 
         os.close(fd)
 
-        shutil.move(temp_path, self.index_path())
+        shutil.move(temp_path, posix2local(self.index_path()))
 
     def get_local_keys(self):
         return list(traverse(self.path, ignore_files=self.ignore_files))
 
     def get_real_local_timestamp(self, key):
-        full_path = os.path.join(self.path, key)
+        full_path = posix2local(posixpath.join(self.path, key))
         if os.path.exists(full_path):
             return os.path.getmtime(full_path)
         else:
@@ -211,7 +245,7 @@ class LocalSyncClient(SyncClient):
         self.index[key]["local_timestamp"] = timestamp
 
     def get_size(self, key):
-        path = self.get_uri(key)
+        path = posix2local(self.get_uri(key))
         if os.path.exists(path):
             return os.stat(path).st_size
         else:
@@ -226,7 +260,7 @@ class LocalSyncClient(SyncClient):
         self.index[key]["remote_timestamp"] = timestamp
 
     def reload_ignore_files(self):
-        ignore_path = os.path.join(self.path, ".syncignore")
+        ignore_path = posix2local(posixpath.join(self.path, ".syncignore"))
 
         if os.path.exists(ignore_path):
             with open(ignore_path, "r") as fp:
